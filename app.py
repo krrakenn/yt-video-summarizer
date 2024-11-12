@@ -74,11 +74,9 @@ def get_transcript(url):
         video_id = extract_video_id(url)
         if not video_id:
             return "Error: Could not extract video ID from URL", None
-            
-        # Add custom headers to YouTube transcript request
-        YouTubeTranscriptApi.get_transcript._client.http_client.headers.update(st.session_state.headers)
         
-        transcript_data = YouTubeTranscriptApi.list_transcripts(video_id).find_manually_created_transcript(['en']).fetch()
+        # Remove the problematic header modification
+        transcript_data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
         return " ".join(entry['text'] for entry in transcript_data), video_id
     except Exception as e:
         return f"Error: {str(e)}", None

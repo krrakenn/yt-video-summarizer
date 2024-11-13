@@ -53,6 +53,7 @@ def get_transcript(url):
         video_id = extract_video_id(url)
         if not video_id:
             return "Error: Could not extract video ID from URL", None
+        time.sleep(1)
         # Get list of available transcripts
         transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
         # Try transcripts in priority order

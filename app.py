@@ -55,7 +55,7 @@ def get_transcript(url):
             return "Error: Could not extract video ID from URL", None
         time.sleep(1)
         # Get list of available transcripts
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id,proxies={"http": "http://67.43.227.227:19487"}) //added proxy here
         # Try transcripts in priority order
         transcript = None
         try:

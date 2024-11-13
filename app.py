@@ -1,8 +1,11 @@
 import requests
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi
 from urllib.parse import urlparse, parse_qs
 import time
+import os
+from selenium import webdriver
+from time import sleep
+import pandas as pd
 
 SUMMARY_API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
 QA_API_URL = "https://api-inference.huggingface.co/models/deepset/roberta-base-squad2"
@@ -42,43 +45,72 @@ def generate_summary(text):
     elapsed_time = time.time() - start_time
     return ' '.join(summaries), elapsed_time
 
+def open_url_in_chrome(url, mode='headless'):
+    if mode == 'headed':
+        driver = webdriver.Chrome()
+    elif mode == 'headless':
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        driver = webdriver.Chrome('./chromedriver.exe', options=options)
+    driver.get(url)
+    return driver
+
+def accept_T_and_C(driver):
+    driver.find_element_by_xpath("//paper-button[@aria-label='No thanks']").click()
+    driver.switch_to.frame(driver.find_element_by_xpath("//iframe[contains(@src, 'consent.google.com')]"))
+    sleep(1)
+    driver.find_element_by_xpath('//*[@id="introAgreeButton"]/span/span').click()
+    sleep(3)
+    driver.refresh()
+
+def get_transcript_from_selenium(driver, mode):
+    driver.implicitly_wait(10)
+    if mode == 'headed':
+        try:
+            print('Accepting Terms and Conditions')
+            accept_T_and_C(driver)
+        except:
+            print("No T&Cs to accept.")
+        driver.find_element_by_xpath("//button[@aria-label='More actions']").click()
+        driver.find_element_by_xpath("//*[@id='items']/ytd-menu-service-item-renderer/tp-yt-paper-item").click()
+        sleep(3)
+    elif mode == 'headless':
+        try:
+            driver.find_elements_by_xpath("//button[@aria-label='More actions']")[1].click()
+        except:
+            sleep(3)
+            driver.refresh()
+            get_transcript_from_selenium(driver, mode)
+        try:
+            driver.find_element_by_xpath("//*[@id='items']/ytd-menu-service-item-renderer/tp-yt-paper-item").click()
+        except:
+            sleep(3)
+            driver.refresh()
+            get_transcript_from_selenium(driver, mode)
+    transcript_element = driver.find_element_by_xpath("//*[@id='body']/ytd-transcript-segment-list-renderer")
+    transcript = transcript_element.text
+    return transcript
+
+def transcript_to_df(transcript):
+    transcript = transcript.split('\n')
+    transcript_timestamps = transcript[::2]
+    transcript_text = transcript[1::2]
+    df = pd.DataFrame({'timestamp': transcript_timestamps, 'text': transcript_text})
+    return df
+
+def get_transcript(url, mode='headless'):
+    driver = open_url_in_chrome(url, mode)
+    transcript = get_transcript_from_selenium(driver, mode)
+    driver.quit()
+    return transcript
+
 def extract_video_id(url):
     parsed_url = urlparse(url)
     if parsed_url.query:
         return parse_qs(parsed_url.query).get('v', [None])[0]
     return parsed_url.path.split('/')[-1] if '/' in parsed_url.path else None
 
-def get_transcript(url):
-    try:
-        video_id = extract_video_id(url)
-        if not video_id:
-            return "Error: Could not extract video ID from URL", None
-        time.sleep(1)
-        # Get list of available transcripts
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id,proxies={"socks4": "socks4://13.155.99.130:3128"}) # added proxy here
-        # Try transcripts in priority order
-        transcript = None
-        try:
-            transcript = transcript_list.find_manually_created_transcript(['en'])
-        except:
-            transcript = transcript_list.find_generated_transcript(['en'])
-        # Get the actual transcript
-        transcript_data = transcript.fetch()
-        # Combine all text entries
-        full_transcript = " ".join([entry['text'] for entry in transcript_data])
-        return full_transcript, video_id
-    except Exception as e:
-        return f"Error: {str(e)}", None
-    '''try:
-        video_id = extract_video_id(url)
-        if not video_id:
-            return "Error: Could not extract video ID from URL", None
-        transcript_data = YouTubeTranscriptApi.list_transcripts(video_id).find_manually_created_transcript(['en']).fetch()
-        return " ".join(entry['text'] for entry in transcript_data), video_id
-    except Exception as e:
-        return f"Error: {str(e)}", None'''
-
-# Streamlit Interface with Gradient Title
+# Streamlit Interface
 st.markdown(
     """
     <h1 style="background: -webkit-linear-gradient(#a0eaff, #85d1e5); -webkit-background-clip: text; color: transparent;">
@@ -92,8 +124,8 @@ video_url = st.text_input("YouTube Video URL")
 choice = st.radio("Choose an action:", ('Generate Summary', 'Ask Questions'))
 
 if video_url:
-    transcript, video_id = get_transcript(video_url)
-    if video_id:
+    transcript = get_transcript(video_url)
+    if transcript:
         if choice == 'Generate Summary':
             st.write("Generating summary...")
             summary, elapsed_time = generate_summary(transcript)
@@ -101,12 +133,11 @@ if video_url:
             st.subheader("Summary")
             st.text_area("Video Summary", value=summary, height=300, max_chars=5000)
             st.write(f"Time taken to generate summary: {elapsed_time:.2f} seconds")
-            st.download_button("Download Summary", data=summary, file_name=f"summary_{video_id}.txt", mime="text/plain")
+            st.download_button("Download Summary", data=summary, file_name=f"summary.txt", mime="text/plain")
 
         elif choice == 'Ask Questions':
             st.subheader("Ask Questions About the Video")
             question = st.text_input("Enter your question:")
-
             if st.button("Get Answer"):
                 if question:
                     output = query(QA_API_URL, qa_headers, {
@@ -115,9 +146,7 @@ if video_url:
                     answer = output.get("answer", "No answer found.")
                     confidence = output.get("score", 0) * 100  # Convert to percentage
 
-                    # Confidence color-coding
                     confidence_color = "green" if confidence > 70 else "yellow" if confidence >= 50 else "red"
-                    # Display answer and confidence with color-coded confidence
                     st.write(f"Answer: {answer}")
                     st.markdown(
                         f"<span style='color:{confidence_color}; font-weight:bold;'>Confidence: {confidence:.2f}%</span>",
@@ -126,6 +155,6 @@ if video_url:
                 else:
                     st.write("Please enter a question.")
     else:
-        st.error(transcript)  # Display error if transcript extraction fails
+        st.error("Transcript extraction failed.")
 else:
     st.write("Please enter a valid YouTube URL.")

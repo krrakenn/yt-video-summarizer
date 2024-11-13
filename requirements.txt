@@ -3,3 +3,5 @@ streamlit>=1.22.0
 youtube-transcript-api>=0.6.0
 urllib3>=1.26.0
 python-dotenv>=0.21.0
+selenium>=4.0.0
+pandas

@@ -1,3 +1,5 @@
-streamlit
-gradio_client
-youtube_transcript_api
+requests>=2.28.0
+streamlit>=1.22.0
+youtube-transcript-api>=0.6.0
+urllib3>=1.26.0
+python-dotenv>=0.21.0

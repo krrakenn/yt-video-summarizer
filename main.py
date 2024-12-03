@@ -1,127 +1,130 @@
+import requests
 import streamlit as st
-from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.decomposition import LatentDirichletAllocation
-from transformers import pipeline
-from textblob import TextBlob
-import re
-import nltk
+from youtube_transcript_api import YouTubeTranscriptApi
+from urllib.parse import urlparse, parse_qs
+import time
 
-# Ensure that necessary NLTK data is downloaded
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+SUMMARY_API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
+QA_API_URL = "https://api-inference.huggingface.co/models/deepset/roberta-base-squad2"
+summary_headers = {"Authorization": "Bearer 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"}
+qa_headers = {"Authorization": "Bearer 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"}
 
-# Function to summarize text
-def summarize_text(text, max_length=50000):
-    summarization_pipeline = pipeline("summarization")
-    summary = summarization_pipeline(text, max_length=max_length, min_length=50, do_sample=False)
-    return summary[0]['summary_text']
+def query(api_url, headers, payload):
+    response = requests.post(api_url, headers=headers, json=payload)
+    return response.json()
 
-# Function to extract keywords
-def extract_keywords(text):
-    stop_words = set(stopwords.words('english'))
-    lemmatizer = WordNetLemmatizer()
+def chunk_text(text, max_length=512):
+    words = text.split()
+    for i in range(0, len(words), max_length):
+        yield ' '.join(words[i:i + max_length])
 
-    words = word_tokenize(text)
-    words = [lemmatizer.lemmatize(word.lower()) for word in words if word.isalnum()]
-    keywords = [word for word in words if word not in stop_words and len(word) > 1]
+def generate_summary(text):
+    summaries = []
+    total_chunks = len(list(chunk_text(text)))
+    progress_bar = st.progress(0)
+    progress_text = st.empty()
+    start_time = time.time()
 
-    counter = CountVectorizer().fit_transform([' '.join(keywords)])
-    vocabulary = CountVectorizer().fit([' '.join(keywords)]).vocabulary_
-    top_keywords = sorted(vocabulary, key=vocabulary.get, reverse=True)[:5]
+    for i, chunk in enumerate(chunk_text(text)):
+        chunk_length = len(chunk.split())
+        min_len, max_len = (1, 60) if chunk_length <= 150 else (70, 130) if chunk_length <= 300 else (130, 280)
 
-    return top_keywords
+        output = query(SUMMARY_API_URL, summary_headers, {
+            "inputs": chunk,
+            "parameters": {"min_length": min_len, "max_length": max_len}
+        })
+        summaries.append(output[0]['summary_text'])
+        progress_bar.progress((i + 1) / total_chunks)
+        progress_text.text(f"Progress: {int((i + 1) / total_chunks * 100)}%")
 
-# Function to perform topic modeling (LDA)
-def topic_modeling(text):
-    vectorizer = CountVectorizer(max_df=2, min_df=0.95, stop_words='english')
-    tf = vectorizer.fit_transform([text])
-    lda_model = LatentDirichletAllocation(n_components=5, max_iter=5, learning_method='online', random_state=42)
-    lda_model.fit(tf)
-    feature_names = vectorizer.get_feature_names_out()
-    topics = []
-    for topic_idx, topic in enumerate(lda_model.components_):
-        topics.append([feature_names[i] for i in topic.argsort()[:-6:-1]])
-    return topics
+    progress_bar.empty()
+    progress_text.empty()
+    elapsed_time = time.time() - start_time
+    return ' '.join(summaries), elapsed_time
 
-# Function to extract YouTube video ID from URL
 def extract_video_id(url):
-    video_id = None
-    patterns = [
-        r'v=([^&]+)',  # Pattern for URLs with 'v=' parameter
-        r'youtu.be/([^?]+)',  # Pattern for shortened URLs
-        r'youtube.com/embed/([^?]+)'  # Pattern for embed URLs
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            video_id = match.group(1)
-            break
-    return video_id
+    parsed_url = urlparse(url)
+    if parsed_url.query:
+        return parse_qs(parsed_url.query).get('v', [None])[0]
+    return parsed_url.path.split('/')[-1] if '/' in parsed_url.path else None
 
-# Main Streamlit app
-def main():
-    st.title("YouTube Video Summarizer")
-
-    # User input for YouTube video URL
-    video_url = st.text_input("Enter YouTube Video URL:", "")
-
-    # User customization options
-    max_summary_length = st.slider("Max Summary Length:", 1000, 20000, 50000)
-
-    if st.button("Summarize"):
+def get_transcript(url):
+    try:
+        video_id = extract_video_id(url)
+        if not video_id:
+            return "Error: Could not extract video ID from URL", None
+        # Get list of available transcripts
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        # Try transcripts in priority order
+        transcript = None
         try:
-            # Extract video ID from URL
-            video_id = extract_video_id(video_url)
-            if not video_id:
-                st.error("Invalid YouTube URL. Please enter a valid URL.")
-                return
+            transcript = transcript_list.find_manually_created_transcript(['en'])
+        except:
+            transcript = transcript_list.find_generated_transcript(['en'])
+        # Get the actual transcript
+        transcript_data = transcript.fetch()
+        # Combine all text entries
+        full_transcript = " ".join([entry['text'] for entry in transcript_data])
+        return full_transcript, video_id
+    except Exception as e:
+        return f"Error: {str(e)}", None
+    '''try:
+        video_id = extract_video_id(url)
+        if not video_id:
+            return "Error: Could not extract video ID from URL", None
+        transcript_data = YouTubeTranscriptApi.list_transcripts(video_id).find_manually_created_transcript(['en']).fetch()
+        return " ".join(entry['text'] for entry in transcript_data), video_id
+    except Exception as e:
+        return f"Error: {str(e)}", None'''
 
-            # Get transcript of the video
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-            if not transcript:
-                st.error("Transcript not available for this video.")
-                return
+# Streamlit Interface with Gradient Title
+st.markdown(
+    """
+    <h1 style="background: -webkit-linear-gradient(#a0eaff, #85d1e5); -webkit-background-clip: text; color: transparent;">
+        TubeIntel: Summarize Video and Ask Questions about the Video
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
 
-            video_text = ' '.join([line['text'] for line in transcript])
+video_url = st.text_input("YouTube Video URL")
+choice = st.radio("Choose an action:", ('Generate Summary', 'Ask Questions'))
 
-            # Summarize the transcript
-            summary = summarize_text(video_text, max_length=max_summary_length)
+if video_url:
+    transcript, video_id = get_transcript(video_url)
+    if video_id:
+        if choice == 'Generate Summary':
+            st.write("Generating summary...")
+            summary, elapsed_time = generate_summary(transcript)
+            st.success("Summary generated successfully!")
+            st.subheader("Summary")
+            st.text_area("Video Summary", value=summary, height=300, max_chars=5000)
+            st.write(f"Time taken to generate summary: {elapsed_time:.2f} seconds")
+            st.download_button("Download Summary", data=summary, file_name=f"summary_{video_id}.txt", mime="text/plain")
 
-            # Extract keywords from the transcript
-            keywords = extract_keywords(video_text)
+        elif choice == 'Ask Questions':
+            st.subheader("Ask Questions About the Video")
+            question = st.text_input("Enter your question:")
 
-            # Perform topic modeling
-            topics = topic_modeling(video_text)
+            if st.button("Get Answer"):
+                if question:
+                    output = query(QA_API_URL, qa_headers, {
+                        "inputs": {"question": question, "context": transcript}
+                    })
+                    answer = output.get("answer", "No answer found.")
+                    confidence = output.get("score", 0) * 100  # Convert to percentage
 
-            # Perform sentiment analysis
-            sentiment = TextBlob(video_text).sentiment
-
-            # Display summarized text, keywords, topics, and sentiment
-            st.subheader("Video Summary:")
-            st.write(summary)
-
-            st.subheader("Keywords:")
-            st.write(keywords)
-
-            st.subheader("Topics:")
-            for idx, topic in enumerate(topics):
-                st.write(f"Topic {idx+1}: {', '.join(topic)}")
-
-            st.subheader("Sentiment Analysis:")
-            st.write(f"Polarity: {sentiment.polarity}")
-            st.write(f"Subjectivity: {sentiment.subjectivity}")
-
-        except TranscriptsDisabled:
-            st.error("Transcripts are disabled for this video.")
-        except NoTranscriptFound:
-            st.error("No transcript found for this video.")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+                    # Confidence color-coding
+                    confidence_color = "green" if confidence > 70 else "yellow" if confidence >= 50 else "red"
+                    # Display answer and confidence with color-coded confidence
+                    st.write(f"Answer: {answer}")
+                    st.markdown(
+                        f"<span style='color:{confidence_color}; font-weight:bold;'>Confidence: {confidence:.2f}%</span>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.write("Please enter a question.")
+    else:
+        st.error(transcript)  # Display error if transcript extraction fails
+else:
+    st.write("Please enter a valid YouTube URL.")

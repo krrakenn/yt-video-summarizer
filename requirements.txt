@@ -2,5 +2,7 @@ requests
 streamlit
 youtube-transcript-api
 urllib3
-torch torchvision torchaudio
+torch 
+torchvision 
+torchaudio
 transformers
